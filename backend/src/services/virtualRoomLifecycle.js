@@ -5,6 +5,11 @@ const VirtualRoom = require('../models/VirtualRoom');
 const MetaverseCharacter = require('../models/MetaverseCharacter');
 const VirtualSession = require('../models/VirtualSession');
 const { defaultSceneManifest, validateSceneManifest } = require('./sceneManifest');
+const {
+  persistSceneManifestVersion,
+  listSceneManifestVersions,
+  rollbackSceneManifestVersion
+} = require('./sceneManifestHistory');
 
 const CURRENT_SESSION_STATES = Object.freeze(['live', 'scheduled', 'ended']);
 
@@ -131,6 +136,7 @@ async function updateRoom({ idOrSlug, actorUserId, actorRole, patch = {} }) {
   if (!room) return { valid: false, status: 404, error: 'Room not found' };
   if (!canManage(actorUserId, actorRole, room.hostUserId)) return { valid: false, status: 403, error: 'Host capability required' };
 
+  const previousManifest = room.sceneManifest;
   const manifestCandidate = patch.sceneManifest !== undefined ? patch.sceneManifest : room.sceneManifest;
   if (patch.sceneManifest !== undefined || patch.state === 'published') {
     const manifestValidation = validateSceneManifest(manifestCandidate);
@@ -162,15 +168,65 @@ async function updateRoom({ idOrSlug, actorUserId, actorRole, patch = {} }) {
     if (!['host-only', 'host-approved'].includes(patch.stagePolicy)) return { valid: false, status: 400, error: 'Invalid stage policy' };
     room.stagePolicy = patch.stagePolicy;
   }
-  if (patch.sceneManifestVersion) room.sceneManifestVersion = cleanText(patch.sceneManifestVersion, 40);
+  if (patch.sceneManifestVersion !== undefined) {
+    return { valid: false, status: 400, error: 'Scene manifest versions are server-managed' };
+  }
   const schedule = validateScheduledFor(patch.scheduledFor);
   if (!schedule.valid) return { valid: false, status: 400, error: schedule.error };
   if (!schedule.unchanged) room.scheduledFor = schedule.date;
   if (Array.isArray(patch.allowedUserIds)) room.allowedUserIds = patch.allowedUserIds.map((id) => cleanText(id, 120)).filter(Boolean);
   if (Array.isArray(patch.blockedUserIds)) room.blockedUserIds = patch.blockedUserIds.map((id) => cleanText(id, 120)).filter(Boolean);
 
+  if (patch.sceneManifest !== undefined || patch.state === 'published') {
+    const versionResult = await persistSceneManifestVersion({
+      room,
+      manifest: room.sceneManifest,
+      previousManifest,
+      actorUserId,
+      reason: patch.state === 'published' ? 'publish' : 'update'
+    });
+    if (!versionResult.valid) return versionResult;
+    return {
+      valid: true,
+      status: 200,
+      room: publicRoom(room),
+      manifestVersion: versionResult.snapshot
+    };
+  }
+
   await room.save();
   return { valid: true, status: 200, room: publicRoom(room) };
+}
+
+async function listRoomManifestVersions({ idOrSlug, actorUserId, actorRole, limit }) {
+  if (!databaseAvailable()) return { valid: false, status: 503, error: 'Room storage unavailable' };
+  const room = await findRoom(idOrSlug);
+  if (!room) return { valid: false, status: 404, error: 'Room not found' };
+  if (!canManage(actorUserId, actorRole, room.hostUserId)) {
+    return { valid: false, status: 403, error: 'Host capability required' };
+  }
+  const versions = await listSceneManifestVersions(room.roomId, limit);
+  return { valid: true, status: 200, activeVersion: room.sceneManifestVersion, versions };
+}
+
+async function rollbackRoomManifestVersion({ idOrSlug, targetVersion, actorUserId, actorRole }) {
+  if (!databaseAvailable()) return { valid: false, status: 503, error: 'Room storage unavailable' };
+  const room = await findRoom(idOrSlug);
+  if (!room) return { valid: false, status: 404, error: 'Room not found' };
+  if (!canManage(actorUserId, actorRole, room.hostUserId)) {
+    return { valid: false, status: 403, error: 'Host capability required' };
+  }
+  if (!['draft', 'published'].includes(room.state)) {
+    return { valid: false, status: 409, error: 'Manifest rollback is locked after session scheduling' };
+  }
+  const result = await rollbackSceneManifestVersion({ room, targetVersion, actorUserId });
+  if (!result.valid) return result;
+  return {
+    valid: true,
+    status: 200,
+    room: publicRoom(room),
+    manifestVersion: result.snapshot
+  };
 }
 
 async function createRoomInvite({ idOrSlug, actorUserId, actorRole }) {
@@ -635,6 +691,8 @@ module.exports = {
   listDiscoverableRooms,
   findRoom,
   updateRoom,
+  listRoomManifestVersions,
+  rollbackRoomManifestVersion,
   createRoomInvite,
   getRoomInviteStatus,
   revokeRoomInvite,

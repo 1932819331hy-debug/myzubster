@@ -5,6 +5,8 @@ const {
   listDiscoverableRooms,
   findRoom,
   updateRoom,
+  listRoomManifestVersions,
+  rollbackRoomManifestVersion,
   createRoomInvite,
   getRoomInviteStatus,
   revokeRoomInvite,
@@ -124,6 +126,40 @@ router.patch('/rooms/:idOrSlug', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Virtual room update error:', error?.name || 'Error');
     return res.status(500).json({ success: false, error: 'Unable to update room' });
+  }
+});
+
+router.get('/rooms/:idOrSlug/manifest/versions', authenticate, async (req, res) => {
+  try {
+    const result = await listRoomManifestVersions({
+      idOrSlug: req.params.idOrSlug,
+      actorUserId: req.userId,
+      actorRole: req.userRole || 'user',
+      limit: req.query.limit
+    });
+    return res.status(result.status).json(result.valid
+      ? { success: true, activeVersion: result.activeVersion, versions: result.versions }
+      : { success: false, error: result.error });
+  } catch (error) {
+    console.error('Scene manifest history read error:', error?.name || 'Error');
+    return res.status(500).json({ success: false, error: 'Unable to read manifest history' });
+  }
+});
+
+router.post('/rooms/:idOrSlug/manifest/versions/:version/rollback', authenticate, async (req, res) => {
+  try {
+    const result = await rollbackRoomManifestVersion({
+      idOrSlug: req.params.idOrSlug,
+      targetVersion: req.params.version,
+      actorUserId: req.userId,
+      actorRole: req.userRole || 'user'
+    });
+    return res.status(result.status).json(result.valid
+      ? { success: true, room: result.room, manifestVersion: result.manifestVersion }
+      : { success: false, error: result.error });
+  } catch (error) {
+    console.error('Scene manifest rollback error:', error?.name || 'Error');
+    return res.status(500).json({ success: false, error: 'Unable to rollback manifest' });
   }
 });
 
