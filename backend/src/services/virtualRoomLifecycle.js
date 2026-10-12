@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const VirtualRoom = require('../models/VirtualRoom');
 const MetaverseCharacter = require('../models/MetaverseCharacter');
 const VirtualSession = require('../models/VirtualSession');
+const { defaultSceneManifest, validateSceneManifest } = require('./sceneManifest');
 
 const CURRENT_SESSION_STATES = Object.freeze(['live', 'scheduled', 'ended']);
 
@@ -53,6 +54,7 @@ function publicRoom(room) {
     capacity: value.capacity,
     stagePolicy: value.stagePolicy,
     sceneManifestVersion: value.sceneManifestVersion,
+    sceneManifest: value.sceneManifest || null,
     scheduledFor: value.scheduledFor || null
   };
 }
@@ -94,7 +96,8 @@ async function createRoom({ actorUserId, name, slug, accessPolicy = 'authenticat
     hostUserId: String(actorUserId),
     accessPolicy,
     capacity: numericCapacity,
-    stagePolicy
+    stagePolicy,
+    sceneManifest: defaultSceneManifest()
   });
   return { valid: true, status: 201, room: publicRoom(room) };
 }
@@ -127,6 +130,15 @@ async function updateRoom({ idOrSlug, actorUserId, actorRole, patch = {} }) {
   const room = await findRoom(idOrSlug);
   if (!room) return { valid: false, status: 404, error: 'Room not found' };
   if (!canManage(actorUserId, actorRole, room.hostUserId)) return { valid: false, status: 403, error: 'Host capability required' };
+
+  const manifestCandidate = patch.sceneManifest !== undefined ? patch.sceneManifest : room.sceneManifest;
+  if (patch.sceneManifest !== undefined || patch.state === 'published') {
+    const manifestValidation = validateSceneManifest(manifestCandidate);
+    if (!manifestValidation.valid) {
+      return { valid: false, status: 400, error: 'Invalid scene manifest', details: manifestValidation.errors };
+    }
+    room.sceneManifest = manifestValidation.manifest;
+  }
 
   if (patch.state && patch.state !== room.state) {
     if (!ROOM_TRANSITIONS[room.state]?.has(patch.state)) return { valid: false, status: 409, error: `Invalid room transition ${room.state} -> ${patch.state}` };
