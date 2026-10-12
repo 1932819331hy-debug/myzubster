@@ -27,6 +27,7 @@ const virtualRoomSchema = new mongoose.Schema({
     default: 'host-only'
   },
   sceneManifestVersion: { type: String, default: '1' },
+  sceneManifest: { type: mongoose.Schema.Types.Mixed, default: null },
   scheduledFor: { type: Date, default: null }
 }, { timestamps: true });
 
